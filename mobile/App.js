@@ -14,6 +14,9 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
+const USERNAME_MIN_LEN = 3;
+const USERNAME_MAX_LEN = 24;
+
 function nowTime() {
   const date = new Date();
   return date.toLocaleTimeString();
@@ -42,19 +45,84 @@ function detectDefaultHost() {
 }
 
 export default function App() {
+  function normalizeUsername(value) {
+    return value.trim().toLowerCase();
+  }
+
+  function validateUsernameLocal(value) {
+    if (!value) {
+      return 'Ник не должен быть пустым';
+    }
+    if (value.length < USERNAME_MIN_LEN) {
+      return `Минимум ${USERNAME_MIN_LEN} символа`;
+    }
+    if (value.length > USERNAME_MAX_LEN) {
+      return `Максимум ${USERNAME_MAX_LEN} символа`;
+    }
+    if (!/^[a-z0-9_.-]+$/i.test(value)) {
+      return "Разрешены только a-z, 0-9, '.', '_' и '-'";
+    }
+    return null;
+  }
+
   const [host, setHost] = useState(detectDefaultHost);
   const [port, setPort] = useState('8080');
   const [input, setInput] = useState('');
   const [username, setUsername] = useState('me');
   const [draftUsername, setDraftUsername] = useState('me');
+  const [usernameStatus, setUsernameStatus] = useState(null);
+  const [showUsernameTooltip, setShowUsernameTooltip] = useState(false);
+  const [isSavingUsername, setIsSavingUsername] = useState(false);
   const [screen, setScreen] = useState('chat');
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState([]);
 
   const socketRef = useRef(null);
   const listRef = useRef(null);
+  const saveTimeoutRef = useRef(null);
+  const pendingSaveUsernameRef = useRef(null);
 
   const wsUrl = useMemo(() => `ws://${host.trim()}:${port.trim()}/ws`, [host, port]);
+  const httpBaseUrl = useMemo(() => `http://${host.trim()}:${port.trim()}`, [host, port]);
+  const normalizedDraftUsername = useMemo(
+    () => normalizeUsername(draftUsername),
+    [draftUsername]
+  );
+  const draftUsernameValidation = useMemo(
+    () => validateUsernameLocal(normalizedDraftUsername),
+    [normalizedDraftUsername]
+  );
+  const canSaveUsername = useMemo(
+    () =>
+      connected &&
+      !draftUsernameValidation &&
+      !isSavingUsername &&
+      normalizedDraftUsername !== normalizeUsername(username),
+    [
+      connected,
+      draftUsernameValidation,
+      isSavingUsername,
+      normalizedDraftUsername,
+      username,
+    ]
+  );
+
+  const usernameIndicator = useMemo(() => {
+    if (!usernameStatus) {
+      return { icon: '•', color: '#8a90a3' };
+    }
+
+    const message = (usernameStatus.message || '').toLowerCase();
+    if (message.includes('проверяем')) {
+      return { icon: '⏳', color: '#ffd166' };
+    }
+
+    if (usernameStatus.available) {
+      return { icon: '✅', color: '#7ddc84' };
+    }
+
+    return { icon: '❌', color: '#ff8d8d' };
+  }, [usernameStatus]);
 
   const addSystem = (text) => {
     setMessages((prev) => [
@@ -95,6 +163,43 @@ export default function App() {
         const parsed = JSON.parse(event.data);
         if (parsed.type === 'chat_message') {
           addChat(parsed.from || 'peer', parsed.text || '');
+        } else if (parsed.type === 'username_observed') {
+          // Служебное событие от backend: в мобильном UI просто игнорируем.
+          return;
+        } else if (parsed.type === 'username_status') {
+          const normalizedIncoming = normalizeUsername(parsed.username || '');
+          const pendingSave = pendingSaveUsernameRef.current;
+          const isApplied = Boolean(parsed.applied);
+
+          if (pendingSave && normalizedIncoming !== pendingSave) {
+            return;
+          }
+
+          if (!pendingSave && isApplied) {
+            return;
+          }
+
+          setUsernameStatus({
+            available: Boolean(parsed.available),
+            applied: isApplied,
+            username: normalizedIncoming,
+            message: parsed.message || '',
+          });
+
+          if (saveTimeoutRef.current) {
+            clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = null;
+          }
+          pendingSaveUsernameRef.current = null;
+          setIsSavingUsername(false);
+
+          if (parsed.available && parsed.applied) {
+            const normalized = normalizeUsername(parsed.username || '');
+            if (normalized) {
+              setUsername(normalized);
+              addSystem(`Ник сохранён: ${normalized}`);
+            }
+          }
         } else if (parsed.type === 'system') {
           addSystem(parsed.message || 'system');
         } else {
@@ -128,13 +233,61 @@ export default function App() {
 
   const openSettings = () => {
     setDraftUsername(username || 'me');
+    setUsernameStatus(null);
+    setShowUsernameTooltip(false);
+    setIsSavingUsername(false);
+    pendingSaveUsernameRef.current = null;
     setScreen('settings');
   };
 
   const saveSettings = () => {
-    const value = draftUsername.trim();
-    setUsername(value || 'me');
-    setScreen('chat');
+    const value = normalizedDraftUsername;
+    const localError = draftUsernameValidation;
+
+    if (localError) {
+      setUsernameStatus({ available: false, applied: false, username: value, message: localError });
+      return;
+    }
+
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+      setUsernameStatus({
+        available: false,
+        applied: false,
+        username: value,
+        message: 'Для проверки уникальности подключись к серверу',
+      });
+      return;
+    }
+
+    socketRef.current.send(JSON.stringify({ type: 'set_username', username: value }));
+    pendingSaveUsernameRef.current = value;
+    setIsSavingUsername(true);
+    setUsernameStatus({
+      available: true,
+      applied: false,
+      username: value,
+      message: 'Сохраняем ник...',
+    });
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      setUsernameStatus((prev) => {
+        if (!prev?.applied) {
+          return {
+            available: false,
+            applied: false,
+            username: value,
+            message: 'Сервер не ответил на сохранение ника',
+          };
+        }
+        return prev;
+      });
+      setIsSavingUsername(false);
+      pendingSaveUsernameRef.current = null;
+      saveTimeoutRef.current = null;
+    }, 2500);
   };
 
   const scrollToBottom = (animated = true) => {
@@ -161,8 +314,72 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    return () => disconnect();
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+      disconnect();
+    };
   }, []);
+
+  useEffect(() => {
+    if (screen !== 'settings') {
+      return;
+    }
+
+    const normalized = normalizeUsername(draftUsername);
+    const localError = validateUsernameLocal(normalized);
+
+    if (localError) {
+      setUsernameStatus({
+        available: false,
+        applied: false,
+        username: normalized,
+        message: localError,
+      });
+      return;
+    }
+
+    setUsernameStatus({
+      available: false,
+      applied: false,
+      username: normalized,
+      message: 'Проверяем доступность ника...',
+    });
+
+    const timer = setTimeout(() => {
+      fetch(
+        `${httpBaseUrl}/check-username/${encodeURIComponent(normalized)}?current=${encodeURIComponent(
+          normalizeUsername(username)
+        )}`
+      )
+        .then((response) => response.json())
+        .then((payload) => {
+          const normalizedDraft = normalizeUsername(draftUsername);
+          const normalizedIncoming = normalizeUsername(payload.username || '');
+          if (normalizedDraft && normalizedIncoming && normalizedDraft !== normalizedIncoming) {
+            return;
+          }
+
+          setUsernameStatus({
+            available: Boolean(payload.available),
+            applied: false,
+            username: normalizedIncoming,
+            message: payload.message || 'Не удалось проверить ник',
+          });
+        })
+        .catch(() => {
+          setUsernameStatus({
+            available: false,
+            applied: false,
+            username: normalized,
+            message: 'Ошибка проверки ника (HTTP)',
+          });
+        });
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [draftUsername, screen, host, port, username]);
 
   return (
     <SafeAreaProvider>
@@ -174,15 +391,45 @@ export default function App() {
             <Text style={styles.label}>Юзернейм</Text>
             <TextInput
               value={draftUsername}
-              onChangeText={setDraftUsername}
+              onChangeText={(value) => {
+                setDraftUsername(value);
+              }}
               placeholder="Введите юзернейм"
               placeholderTextColor="#8a90a3"
               style={styles.input}
               autoCapitalize="none"
             />
 
+            <View style={styles.usernameIndicatorRow}>
+              <Pressable
+                onPress={() => setShowUsernameTooltip((prev) => !prev)}
+                style={styles.usernameIndicatorBtn}
+              >
+                <Text style={[styles.usernameIndicatorIcon, { color: usernameIndicator.color }]}>
+                  {usernameIndicator.icon}
+                </Text>
+              </Pressable>
+              <Text style={styles.usernameIndicatorHint}>Нажми на значок</Text>
+            </View>
+
+            {showUsernameTooltip && usernameStatus && (
+              <View style={styles.usernameTooltip}>
+                <Text
+                  style={
+                    usernameStatus.available ? styles.usernameOk : styles.usernameError
+                  }
+                >
+                  {usernameStatus.message}
+                </Text>
+              </View>
+            )}
+
             <View style={styles.row}>
-              <Pressable style={styles.btn} onPress={saveSettings}>
+              <Pressable
+                style={[styles.btn, !canSaveUsername && styles.btnDisabled]}
+                onPress={saveSettings}
+                disabled={!canSaveUsername}
+              >
                 <Text style={styles.btnText}>Сохранить</Text>
               </Pressable>
               <Pressable style={[styles.btn, styles.btnSecondary]} onPress={() => setScreen('chat')}>
@@ -314,6 +561,9 @@ const styles = StyleSheet.create({
   btnSecondary: {
     backgroundColor: '#39405d',
   },
+  btnDisabled: {
+    backgroundColor: '#586181',
+  },
   btnText: {
     color: '#fff',
     fontWeight: '600',
@@ -324,6 +574,40 @@ const styles = StyleSheet.create({
   },
   label: {
     color: '#d7dcf0',
+    fontSize: 13,
+  },
+  usernameIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  usernameIndicatorBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#171d34',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  usernameIndicatorIcon: {
+    fontSize: 16,
+  },
+  usernameIndicatorHint: {
+    color: '#8a90a3',
+    fontSize: 12,
+  },
+  usernameTooltip: {
+    backgroundColor: '#171d34',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  usernameOk: {
+    color: '#7ddc84',
+    fontSize: 13,
+  },
+  usernameError: {
+    color: '#ff8d8d',
     fontSize: 13,
   },
   list: {

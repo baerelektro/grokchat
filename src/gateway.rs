@@ -1,6 +1,6 @@
 use crate::api_types::{UiClientMessage, UiCommand, UiEvent};
 use axum::{
-    extract::{ws::rejection::WebSocketUpgradeRejection, ws::Message, ws::WebSocket, ws::WebSocketUpgrade, State},
+    extract::{ws::rejection::WebSocketUpgradeRejection, ws::Message, ws::WebSocket, ws::WebSocketUpgrade, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
@@ -8,14 +8,36 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use tokio::sync::{broadcast, mpsc::UnboundedSender};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, mpsc::UnboundedSender, RwLock};
+use serde::Serialize;
+use serde::Deserialize;
+
+const USERNAME_MIN_LEN: usize = 3;
+const USERNAME_MAX_LEN: usize = 24;
+const USERNAME_TTL: Duration = Duration::from_secs(120);
+
+#[derive(Debug, Serialize)]
+struct UsernameCheckResponse {
+    username: String,
+    available: bool,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsernameCheckQuery {
+    current: Option<String>,
+}
 
 #[derive(Clone)]
 struct GatewayState {
     peer_id: String,
     command_tx: UnboundedSender<UiCommand>,
     events_tx: broadcast::Sender<UiEvent>,
+    known_usernames: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 pub async fn run_gateway(
@@ -23,15 +45,35 @@ pub async fn run_gateway(
     command_tx: UnboundedSender<UiCommand>,
     events_tx: broadcast::Sender<UiEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let known_usernames: Arc<RwLock<HashMap<String, Instant>>> = Arc::new(RwLock::new(HashMap::new()));
+
+    let mut events_rx_for_registry = events_tx.subscribe();
+    let known_usernames_for_registry = known_usernames.clone();
+    tokio::spawn(async move {
+        while let Ok(event) = events_rx_for_registry.recv().await {
+            if let UiEvent::UsernameObserved { username } = event {
+                let normalized = normalize_username(&username);
+                if !normalized.is_empty() {
+                    known_usernames_for_registry
+                        .write()
+                        .await
+                        .insert(normalized, Instant::now());
+                }
+            }
+        }
+    });
+
     let state = GatewayState {
         peer_id,
         command_tx,
         events_tx,
+        known_usernames,
     };
 
     let router = Router::new()
         .route("/health", get(health_handler))
         .route("/peer", get(peer_handler))
+        .route("/check-username/{username}", get(check_username_handler))
         .route("/ws", get(ws_handler))
         .with_state(state);
 
@@ -48,6 +90,34 @@ async fn health_handler() -> Json<serde_json::Value> {
 
 async fn peer_handler(State(state): State<GatewayState>) -> Json<serde_json::Value> {
     Json(json!({ "peer_id": state.peer_id }))
+}
+
+async fn check_username_handler(
+    Path(username): Path<String>,
+    Query(query): Query<UsernameCheckQuery>,
+    State(state): State<GatewayState>,
+) -> Json<UsernameCheckResponse> {
+    let requested = normalize_username(&username);
+    let current = query.current.as_deref().map(normalize_username);
+    let status = build_username_status(&requested, &state, current.as_deref(), false).await;
+
+    match status {
+        UiEvent::UsernameStatus {
+            username,
+            available,
+            message,
+            ..
+        } => Json(UsernameCheckResponse {
+            username,
+            available,
+            message,
+        }),
+        _ => Json(UsernameCheckResponse {
+            username: requested,
+            available: false,
+            message: "Внутренняя ошибка проверки".to_owned(),
+        }),
+    }
 }
 
 async fn ws_handler(
@@ -67,6 +137,7 @@ async fn ws_handler(
 async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
     let (mut sender, mut receiver) = socket.split();
     let mut events_rx = state.events_tx.subscribe();
+    let mut current_username: Option<String> = None;
 
     let hello = UiEvent::System {
         message: format!("connected_to_peer:{}", state.peer_id),
@@ -99,14 +170,61 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
                 if let Ok(parsed) = serde_json::from_str::<UiClientMessage>(&text) {
                     match parsed {
                         UiClientMessage::SendMessage { text } => {
-                            let _ = state.command_tx.send(UiCommand::SendMessage { text });
+                            let _ = state.command_tx.send(UiCommand::SendMessage {
+                                text,
+                                username: current_username.clone(),
+                            });
+                        }
+                        UiClientMessage::CheckUsername { username } => {
+                            let requested = normalize_username(&username);
+                            let status = build_username_status(
+                                &requested,
+                                &state,
+                                current_username.as_deref(),
+                                false,
+                            )
+                            .await;
+                            let _ = state.events_tx.send(status);
+                        }
+                        UiClientMessage::SetUsername { username } => {
+                            let requested = normalize_username(&username);
+                            let status = build_username_status(
+                                &requested,
+                                &state,
+                                current_username.as_deref(),
+                                false,
+                            )
+                            .await;
+
+                            if matches!(status, UiEvent::UsernameStatus { available: true, .. }) {
+                                state
+                                    .known_usernames
+                                    .write()
+                                    .await
+                                    .insert(requested.clone(), Instant::now());
+                                current_username = Some(requested.clone());
+                                let _ = state.events_tx.send(UiEvent::UsernameObserved {
+                                    username: requested.clone(),
+                                });
+                                let _ = state.events_tx.send(UiEvent::UsernameStatus {
+                                    username: requested,
+                                    available: true,
+                                    applied: true,
+                                    message: "Ник свободен и сохранён".to_owned(),
+                                });
+                            } else {
+                                let _ = state.events_tx.send(status);
+                            }
                         }
                         UiClientMessage::Ping => {}
                     }
                 } else {
                     let plain = text.trim().to_owned();
                     if !plain.is_empty() {
-                        let _ = state.command_tx.send(UiCommand::SendMessage { text: plain });
+                        let _ = state.command_tx.send(UiCommand::SendMessage {
+                            text: plain,
+                            username: current_username.clone(),
+                        });
                     }
                 }
             }
@@ -116,4 +234,79 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
     }
 
     send_task.abort();
+}
+
+fn normalize_username(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn validate_username_format(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("Ник не должен быть пустым".to_owned());
+    }
+
+    if value.len() < USERNAME_MIN_LEN {
+        return Err(format!("Минимум {} символа", USERNAME_MIN_LEN));
+    }
+
+    if value.len() > USERNAME_MAX_LEN {
+        return Err(format!("Максимум {} символа", USERNAME_MAX_LEN));
+    }
+
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Err("Разрешены только a-z, 0-9, '.', '_' и '-'".to_owned());
+    }
+
+    Ok(())
+}
+
+async fn build_username_status(
+    requested: &str,
+    state: &GatewayState,
+    current_username: Option<&str>,
+    applied: bool,
+) -> UiEvent {
+    if let Err(message) = validate_username_format(requested) {
+        return UiEvent::UsernameStatus {
+            username: requested.to_owned(),
+            available: false,
+            applied,
+            message,
+        };
+    }
+
+    let available = {
+        let mut known = state.known_usernames.write().await;
+        let now = Instant::now();
+        known.retain(|_, seen_at| now.duration_since(*seen_at) <= USERNAME_TTL);
+
+        if let Some(current) = current_username {
+            requested == current || !known.contains_key(requested)
+        } else {
+            !known.contains_key(requested)
+        }
+    };
+
+    if available {
+        UiEvent::UsernameStatus {
+            username: requested.to_owned(),
+            available: true,
+            applied,
+            message: if applied {
+                "Ник свободен и сохранён".to_owned()
+            } else {
+                "Ник свободен".to_owned()
+            },
+        }
+    } else {
+        UiEvent::UsernameStatus {
+            username: requested.to_owned(),
+            available: false,
+            applied,
+            message: "Этот ник уже занят".to_owned(),
+        }
+    }
 }

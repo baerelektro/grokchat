@@ -10,10 +10,12 @@ use crate::gateway::run_gateway;
 use crate::handlers::{handle_stdin_line, handle_swarm_event, DialState};
 use crate::logging::{log_event, run_log_writer};
 use crate::p2p::build_swarm;
+use crate::sync::{encode_presence, encode_profile};
 use libp2p::{futures::StreamExt, gossipsub, Multiaddr, PeerId};
 use std::{error::Error, path::PathBuf};
 use tokio::io::{self, AsyncBufReadExt};
 use tokio::sync::{broadcast, mpsc::unbounded_channel};
+use tokio::time::{interval, Duration};
 
 // Основной жизненный цикл приложения.
 pub async fn run() -> Result<(), Box<dyn Error>> {
@@ -85,6 +87,16 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let mut swarm = build_swarm(id_keys, local_peer_id)?;
     let chat_topic = gossipsub::IdentTopic::new("grok-chat");
     swarm.behaviour_mut().gossipsub.subscribe(&chat_topic)?;
+    let username = format!("console-{}", &local_peer_id.to_string()[..8]);
+    let _ = ui_events_tx.send(UiEvent::UsernameObserved {
+        username: username.clone(),
+    });
+
+    let profile_payload = encode_profile(&username);
+    let _ = swarm
+        .behaviour_mut()
+        .gossipsub
+        .publish(chat_topic.clone(), profile_payload);
 
     // 5) Начинаем слушать TCP-порт (из конфига или случайный, если 0).
     let listen_port = config.listen_port.unwrap_or(0);
@@ -100,6 +112,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     // 7) Готовим источники событий: stdin и сетевые события swarm.
     let mut stdin = io::BufReader::new(io::stdin()).lines();
     let mut dial_state = DialState::new();
+    let mut presence_tick = interval(Duration::from_secs(15));
 
     // 8) Бесконечный цикл обработки:
     // - если ввели строку в консоль => публикуем сообщение
@@ -110,14 +123,27 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 let line = line?.expect("stdin closed");
                 if !line.is_empty() {
                     // Обработка пользовательского сообщения.
-                    handle_stdin_line(line, &mut swarm, &chat_topic, &log_tx).await;
+                    handle_stdin_line(line, &mut swarm, &chat_topic, &log_tx, Some(&username)).await;
                 }
             }
             command = ui_command_rx.recv() => {
-                if let Some(UiCommand::SendMessage { text }) = command {
+                if let Some(UiCommand::SendMessage { text, username: ui_username }) = command {
                     if !text.is_empty() {
-                        handle_stdin_line(text, &mut swarm, &chat_topic, &log_tx).await;
+                        if let Some(ref ui_username) = ui_username {
+                            let _ = ui_events_tx.send(UiEvent::UsernameObserved {
+                                username: ui_username.clone(),
+                            });
+                        }
+
+                        let sender_username = ui_username.as_deref().or(Some(&username));
+                        handle_stdin_line(text, &mut swarm, &chat_topic, &log_tx, sender_username).await;
                     }
+                }
+            }
+            _ = presence_tick.tick() => {
+                let payload = encode_presence(Some(&username), "online");
+                if let Err(err) = swarm.behaviour_mut().gossipsub.publish(chat_topic.clone(), payload) {
+                    log_event(&log_tx, format!("Не удалось отправить presence: {:?}", err));
                 }
             }
             event = swarm.select_next_some() => {

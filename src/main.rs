@@ -10,6 +10,7 @@ mod gateway;
 mod handlers;
 mod logging;
 mod p2p;
+mod sync;
 
 // Стандартный тип ошибки для удобного проброса ошибок вверх.
 use std::error::Error;

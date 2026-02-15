@@ -1,0 +1,12 @@
+C:\Users\baere\GROGTESTS\grokchat\mobile-libp2p\core\target\debug\deps\core2-a0e4e75167266006.d: C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\lib.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\error.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\mod.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\cursor.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\error.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\impls.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\traits.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\util.rs
+
+C:\Users\baere\GROGTESTS\grokchat\mobile-libp2p\core\target\debug\deps\libcore2-a0e4e75167266006.rmeta: C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\lib.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\error.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\mod.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\cursor.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\error.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\impls.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\traits.rs C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\util.rs
+
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\lib.rs:
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\error.rs:
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\mod.rs:
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\cursor.rs:
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\error.rs:
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\impls.rs:
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\traits.rs:
+C:\Users\baere\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\core2-0.4.0\src\io\util.rs:

@@ -8,6 +8,7 @@
 use crate::logging::log_event;
 use crate::p2p::{log_mesh_state, MyBehaviour, MyBehaviourEvent};
 use crate::api_types::UiEvent;
+use crate::sync::{decode as decode_sync, encode_chat, SyncEnvelope};
 use libp2p::{
     gossipsub, mdns,
     swarm::{Swarm, SwarmEvent},
@@ -47,6 +48,7 @@ pub async fn handle_stdin_line(
     swarm: &mut Swarm<MyBehaviour>,
     chat_topic: &gossipsub::IdentTopic,
     log_tx: &UnboundedSender<String>,
+    username: Option<&str>,
 ) {
     // Логируем исходный ввод для трассировки.
     log_event(log_tx, format!("Считываем ввод: {}", line));
@@ -97,10 +99,11 @@ pub async fn handle_stdin_line(
     }
 
     // Основная попытка публикации сообщения.
+    let payload = encode_chat(&line, username);
     let result = swarm
         .behaviour_mut()
         .gossipsub
-        .publish(chat_topic.clone(), line.as_bytes());
+        .publish(chat_topic.clone(), payload.clone());
 
     match result {
         Ok(_) => {
@@ -138,7 +141,7 @@ pub async fn handle_stdin_line(
             if let Err(err) = swarm
                 .behaviour_mut()
                 .gossipsub
-                .publish(chat_topic.clone(), line.as_bytes())
+                .publish(chat_topic.clone(), payload)
             {
                 println!("⚠️ Даже после активации: {:?}. Жди прогрева...", err);
                 log_event(log_tx, format!("Повторная отправка не удалась: {:?}", err));
@@ -209,17 +212,66 @@ pub fn handle_swarm_event(
                 ..
             } => {
                 // Получили сообщение от другого пира.
-                let text = String::from_utf8_lossy(&message.data);
-                println!("📩 Сообщение от {}: {}", propagation_source, text);
-                log_event(
-                    log_tx,
-                    format!("Получено сообщение от {}: {}", propagation_source, text),
-                );
-                if let Some(tx) = ui_events {
-                    let _ = tx.send(UiEvent::ChatMessage {
-                        from: propagation_source.to_string(),
-                        text: text.to_string(),
-                    });
+                if let Some(sync) = decode_sync(&message.data) {
+                    match sync {
+                        SyncEnvelope::Chat { username, text } => {
+                            let from = username.unwrap_or_else(|| propagation_source.to_string());
+                            println!("📩 Сообщение от {}: {}", from, text);
+                            log_event(
+                                log_tx,
+                                format!("Получено сообщение от {}: {}", from, text),
+                            );
+
+                            if let Some(tx) = ui_events {
+                                let _ = tx.send(UiEvent::ChatMessage { from, text });
+                                let _ = tx.send(UiEvent::UsernameObserved {
+                                    username: propagation_source.to_string(),
+                                });
+                            }
+                        }
+                        SyncEnvelope::Presence {
+                            username,
+                            status,
+                            ts,
+                        } => {
+                            let from = username.unwrap_or_else(|| propagation_source.to_string());
+                            log_event(
+                                log_tx,
+                                format!("Presence от {}: status={} ts={}", from, status, ts),
+                            );
+                            if let Some(tx) = ui_events {
+                                let _ = tx.send(UiEvent::UsernameObserved { username: from });
+                            }
+                        }
+                        SyncEnvelope::Profile { username } => {
+                            log_event(
+                                log_tx,
+                                format!(
+                                    "Profile sync от {}: username={}",
+                                    propagation_source, username
+                                ),
+                            );
+                            if let Some(tx) = ui_events {
+                                let _ = tx.send(UiEvent::UsernameObserved { username });
+                            }
+                        }
+                    }
+                } else {
+                    let text = String::from_utf8_lossy(&message.data);
+                    println!("📩 Сообщение от {}: {}", propagation_source, text);
+                    log_event(
+                        log_tx,
+                        format!("Получено сообщение от {}: {}", propagation_source, text),
+                    );
+                    if let Some(tx) = ui_events {
+                        let _ = tx.send(UiEvent::ChatMessage {
+                            from: propagation_source.to_string(),
+                            text: text.to_string(),
+                        });
+                        let _ = tx.send(UiEvent::UsernameObserved {
+                            username: propagation_source.to_string(),
+                        });
+                    }
                 }
                 log_mesh_state(log_tx, swarm, &chat_topic.hash(), "После получения сообщения");
             }
