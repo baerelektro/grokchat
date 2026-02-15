@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Constants from 'expo-constants';
 import {
   View,
@@ -23,6 +23,17 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 // чтобы пользователь сразу видел корректные ошибки на клиенте.
 const USERNAME_MIN_LEN = 3;
 const USERNAME_MAX_LEN = 24;
+const MAX_MESSAGES = 300;
+
+const MessageItem = React.memo(function MessageItem({ item }) {
+  return (
+    <View style={item.kind === 'system' ? styles.systemBubble : styles.chatBubble}>
+      {item.kind === 'chat' && <Text style={styles.from}>{item.from}</Text>}
+      <Text style={styles.msgText}>{item.text}</Text>
+      <Text style={styles.time}>{item.time}</Text>
+    </View>
+  );
+});
 
 // Форматируем текущее время для меток сообщений в ленте.
 function nowTime() {
@@ -143,21 +154,39 @@ export default function App() {
     return { icon: '❌', color: '#ff8d8d' };
   }, [usernameStatus]);
 
-  const addSystem = (text) => {
-    // Системные сообщения отображаем в той же ленте для прозрачной диагностики.
-    setMessages((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${Math.random()}`, kind: 'system', text, time: nowTime() },
-    ]);
-  };
+  const appendMessage = useCallback((message) => {
+    setMessages((prev) => {
+      const next = [...prev, message];
+      if (next.length > MAX_MESSAGES) {
+        return next.slice(next.length - MAX_MESSAGES);
+      }
+      return next;
+    });
+  }, []);
 
-  const addChat = (from, text) => {
+  const addSystem = useCallback((text) => {
+    // Системные сообщения отображаем в той же ленте для прозрачной диагностики.
+    appendMessage({
+      id: `${Date.now()}-${Math.random()}`,
+      kind: 'system',
+      text,
+      time: nowTime(),
+    });
+  }, [appendMessage]);
+
+  const addChat = useCallback((from, text) => {
     // Вставляем сообщение в конец списка.
-    setMessages((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${Math.random()}`, kind: 'chat', from, text, time: nowTime() },
-    ]);
-  };
+    appendMessage({
+      id: `${Date.now()}-${Math.random()}`,
+      kind: 'chat',
+      from,
+      text,
+      time: nowTime(),
+    });
+  }, [appendMessage]);
+
+  const keyExtractor = useCallback((item) => item.id, []);
+  const renderItem = useCallback(({ item }) => <MessageItem item={item} />, []);
 
   const disconnect = () => {
     // Явно закрываем старый сокет перед новым connect.
@@ -622,15 +651,13 @@ export default function App() {
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           data={messages}
-          keyExtractor={(item) => item.id}
+          keyExtractor={keyExtractor}
+          renderItem={renderItem}
+          initialNumToRender={20}
+          maxToRenderPerBatch={20}
+          windowSize={7}
+          removeClippedSubviews={true}
           onContentSizeChange={() => scrollToBottom(false)}
-          renderItem={({ item }) => (
-            <View style={item.kind === 'system' ? styles.systemBubble : styles.chatBubble}>
-              {item.kind === 'chat' && <Text style={styles.from}>{item.from}</Text>}
-              <Text style={styles.msgText}>{item.text}</Text>
-              <Text style={styles.time}>{item.time}</Text>
-            </View>
-          )}
         />
 
         <View style={[styles.row, styles.composerRow]}>
