@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  SafeAreaView,
   View,
   Text,
   TextInput,
@@ -8,9 +7,11 @@ import {
   FlatList,
   StyleSheet,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 function nowTime() {
   const date = new Date();
@@ -25,6 +26,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
 
   const socketRef = useRef(null);
+  const listRef = useRef(null);
 
   const wsUrl = useMemo(() => `ws://${host.trim()}:${port.trim()}/ws`, [host, port]);
 
@@ -98,19 +100,43 @@ export default function App() {
     setInput('');
   };
 
+  const scrollToBottom = (animated = true) => {
+    if (!listRef.current) {
+      return;
+    }
+
+    listRef.current.scrollToEnd({ animated });
+  };
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      requestAnimationFrame(() => scrollToBottom(true));
+    }
+  }, [messages.length]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const sub = Keyboard.addListener(showEvent, () => {
+      requestAnimationFrame(() => scrollToBottom(true));
+    });
+
+    return () => sub.remove();
+  }, []);
+
   useEffect(() => {
     return () => disconnect();
   }, []);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="light" />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
-        style={styles.container}
-      >
-        <Text style={styles.title}>GrokChat Mobile</Text>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+          style={styles.container}
+        >
+          <Text style={styles.title}>GrokChat Mobile</Text>
 
         <View style={styles.row}>
           <TextInput
@@ -145,11 +171,13 @@ export default function App() {
         </Text>
 
         <FlatList
+          ref={listRef}
           style={styles.list}
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           data={messages}
           keyExtractor={(item) => item.id}
+          onContentSizeChange={() => scrollToBottom(false)}
           renderItem={({ item }) => (
             <View style={item.kind === 'system' ? styles.systemBubble : styles.chatBubble}>
               {item.kind === 'chat' && <Text style={styles.from}>{item.from}</Text>}
@@ -174,8 +202,9 @@ export default function App() {
             <Text style={styles.btnText}>Отправить</Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
