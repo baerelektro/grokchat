@@ -50,8 +50,10 @@ pub async fn handle_stdin_line(
     log_tx: &UnboundedSender<String>,
     username: Option<&str>,
 ) {
+    let sender_name = username.unwrap_or("unknown");
+
     // Логируем исходный ввод для трассировки.
-    log_event(log_tx, format!("Считываем ввод: {}", line));
+    log_event(log_tx, format!("Считываем ввод от {}: {}", sender_name, line));
 
     // Берём текущую картину gossipsub перед публикацией.
     let topic_hash = chat_topic.hash();
@@ -108,8 +110,8 @@ pub async fn handle_stdin_line(
     match result {
         Ok(_) => {
             // Успешная отправка.
-            println!("📤 Отправлено!");
-            log_event(log_tx, format!("Отправлено сообщение: {}", line));
+            println!("📤 {}: {}", sender_name, line);
+            log_event(log_tx, format!("Отправлено сообщение от {}: {}", sender_name, line));
         }
         Err(gossipsub::PublishError::InsufficientPeers) => {
             // Если не хватает пиров в mesh, пробуем fallback:
@@ -146,8 +148,11 @@ pub async fn handle_stdin_line(
                 println!("⚠️ Даже после активации: {:?}. Жди прогрева...", err);
                 log_event(log_tx, format!("Повторная отправка не удалась: {:?}", err));
             } else {
-                println!("📤 Протолкнули через Flood!");
-                log_event(log_tx, "Удачная Flood-публикация".to_owned());
+                println!("📤 {}: {} (через Flood)", sender_name, line);
+                log_event(
+                    log_tx,
+                    format!("Удачная Flood-публикация от {}: {}", sender_name, line),
+                );
             }
         }
         Err(err) => {

@@ -37,6 +37,8 @@ pub fn build_swarm(
     // Формируем MessageId как хеш payload, чтобы одинаковые сообщения
     // считались дублями и не гуляли бесконечно по сети.
     let message_id_fn = |message: &gossipsub::Message| {
+        // Хешируем ТОЛЬКО payload. Для чата этого достаточно:
+        // если текст полностью совпал, считаем сообщение дубликатом.
         let mut state = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&message.data, &mut state);
         gossipsub::MessageId::from(std::hash::Hasher::finish(&state).to_string())
@@ -44,15 +46,22 @@ pub fn build_swarm(
 
     // Конфиг gossipsub под маленькие p2p-сети и быстрый прогрев mesh.
     let gossipsub_config = gossipsub::ConfigBuilder::default()
+        // Частый heartbeat ускоряет формирование mesh на старте.
         .heartbeat_interval(Duration::from_millis(100))
+        // На MVP не делаем жёсткую валидацию подписей/содержимого.
         .validation_mode(gossipsub::ValidationMode::Permissive)
+        // Параметры маленькой mesh-сети.
         .mesh_n_low(1)
         .mesh_n(2)
         .mesh_outbound_min(1)
+        // Разрешаем flood-публикацию, чтобы повысить шанс доставки при прогреве.
         .flood_publish(true)
+        // Включаем self-origin для локальной отладки и прозрачности.
         .allow_self_origin(true)
+        // Peer Exchange помогает быстрее узнавать соседей.
         .do_px()
         .check_explicit_peers_ticks(1)
+        // Поддерживаем floodsub-совместимость для более старых/простых пиров.
         .support_floodsub()
         .message_id_fn(message_id_fn)
         .build()
@@ -72,6 +81,7 @@ pub fn build_swarm(
             mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)?,
         },
         local_peer_id,
+        // Увеличенный idle timeout — соединения не рвутся слишком агрессивно.
         libp2p::swarm::Config::with_tokio_executor()
             .with_idle_connection_timeout(Duration::from_secs(300)),
     ))

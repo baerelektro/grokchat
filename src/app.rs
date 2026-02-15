@@ -40,6 +40,8 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 
     // Сохраняем конфиг на первый запуск и при явном переопределении через CLI.
     if first_run || bootstrap_from_args || port_from_args {
+        // Важный момент: сохраняем уже «сложенный» конфиг (файл + CLI override),
+        // чтобы следующий запуск стартовал с теми же параметрами.
         save_config(&config_path, &config)?;
     }
 
@@ -48,6 +50,8 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let local_peer_id = PeerId::from(id_keys.public());
     let (log_tx, log_rx) = unbounded_channel();
     let (ui_command_tx, mut ui_command_rx) = unbounded_channel::<UiCommand>();
+    // Broadcast нужен, чтобы несколько UI-клиентов могли одновременно
+    // получать одни и те же события от backend.
     let (ui_events_tx, _) = broadcast::channel::<UiEvent>(512);
 
     // Запускаем фонового писателя логов в файл.
@@ -93,6 +97,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     });
 
     let profile_payload = encode_profile(&username);
+    // На старте сразу публикуем профиль, чтобы другие узлы раньше узнали наш ник.
     let _ = swarm
         .behaviour_mut()
         .gossipsub
@@ -127,6 +132,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
             command = ui_command_rx.recv() => {
+                // Команды из мобильного UI приходят сюда через gateway -> channel.
                 if let Some(UiCommand::SendMessage { text, username: ui_username }) = command {
                     if !text.is_empty() {
                         if let Some(ref ui_username) = ui_username {
@@ -141,6 +147,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
             _ = presence_tick.tick() => {
+                // Периодический heartbeat presence для других узлов.
                 let payload = encode_presence(Some(&username), "online");
                 if let Err(err) = swarm.behaviour_mut().gossipsub.publish(chat_topic.clone(), payload) {
                     log_event(&log_tx, format!("Не удалось отправить presence: {:?}", err));

@@ -14,12 +14,19 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+// Коротко про этот файл:
+// 1) Это core-рантайм мобильного libp2p-узла.
+// 2) Поднимает transport + gossipsub + kademlia.
+// 3) Обменивается командами/событиями с bridge-слоем через каналы.
+
+// Набор поведений мобильного узла.
 #[derive(NetworkBehaviour)]
 struct MobileBehaviour {
     gossipsub: gossipsub::Behaviour,
     kad: KadBehaviour<MemoryStore>,
 }
 
+// Единый wire-формат для payload в gossipsub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WireEnvelope {
@@ -39,6 +46,7 @@ fn now_ts() -> u64 {
         .as_secs()
 }
 
+// Конфигурация узла, получаемая от внешнего bridge/UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
     pub username: String,
@@ -56,6 +64,7 @@ impl Default for NodeConfig {
     }
 }
 
+// Команды, которые bridge может отправлять в core.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BridgeCommand {
@@ -65,6 +74,7 @@ pub enum BridgeCommand {
     Shutdown,
 }
 
+// События, которые core отправляет обратно наружу.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreEvent {
@@ -75,6 +85,7 @@ pub enum CoreEvent {
     Error { message: String },
 }
 
+// Единый тип ошибок core-библиотеки.
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("invalid config: {0}")]
@@ -83,11 +94,13 @@ pub enum CoreError {
     Runtime(String),
 }
 
+// Главный объект мобильного libp2p ядра.
 pub struct MobileCore {
     config: NodeConfig,
 }
 
 impl MobileCore {
+    // Создание core с базовой валидацией конфига.
     pub fn new(config: NodeConfig) -> Result<Self, CoreError> {
         if config.topic.trim().is_empty() {
             return Err(CoreError::InvalidConfig("topic must not be empty".to_owned()));
@@ -100,6 +113,7 @@ impl MobileCore {
         &self.config
     }
 
+    // Синхронный запуск: поднимаем tokio runtime и исполняем async-цикл.
     pub fn run(
         &self,
         command_rx: Receiver<BridgeCommand>,
@@ -116,9 +130,11 @@ impl MobileCore {
         command_rx: Receiver<BridgeCommand>,
         event_tx: Sender<CoreEvent>,
     ) -> Result<(), CoreError> {
+        // Генерируем локальную p2p-идентичность.
         let id_keys = Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(id_keys.public());
 
+        // Транспорт: TCP + Noise + Yamux.
         let transport = tcp::tokio::Transport::default()
             .upgrade(upgrade::Version::V1)
             .authenticate(
@@ -128,6 +144,7 @@ impl MobileCore {
             .multiplex(yamux::Config::default())
             .boxed();
 
+        // Базовый конфиг gossipsub для мобильного клиента.
         let gossipsub_config = gossipsub::ConfigBuilder::default()
             .heartbeat_interval(Duration::from_millis(500))
             .validation_mode(gossipsub::ValidationMode::Permissive)
@@ -141,6 +158,7 @@ impl MobileCore {
         )
         .map_err(|err| CoreError::Runtime(format!("gossipsub init failed: {err}")))?;
 
+        // Подписываемся на основной чат-топик.
         let topic = gossipsub::IdentTopic::new(self.config.topic.clone());
         gossipsub
             .subscribe(&topic)
@@ -151,6 +169,7 @@ impl MobileCore {
         let store = MemoryStore::new(local_peer_id);
         let mut kad = KadBehaviour::with_config(local_peer_id, store, kad_config);
 
+        // Добавляем bootstrap-адреса в Kademlia routing table.
         for bootstrap in &self.config.bootstrap_peers {
             let Ok(addr) = bootstrap.parse::<Multiaddr>() else {
                 let _ = event_tx.send(CoreEvent::Error {
@@ -178,6 +197,7 @@ impl MobileCore {
             libp2p::swarm::Config::with_tokio_executor(),
         );
 
+        // Слушаем локальный случайный порт.
         swarm
             .listen_on(
                 "/ip4/0.0.0.0/tcp/0"
@@ -186,6 +206,7 @@ impl MobileCore {
             )
             .map_err(|err| CoreError::Runtime(format!("listen failed: {err}")))?;
 
+        // Пытаемся dial к bootstrap-пирам.
         for bootstrap in &self.config.bootstrap_peers {
             if let Ok(addr) = bootstrap.parse::<Multiaddr>() {
                 let _ = swarm.dial(addr);
@@ -198,6 +219,7 @@ impl MobileCore {
             peer_id: local_peer_id.to_string(),
         });
 
+        // На старте публикуем профиль (username), чтобы сеть быстрее узнала нас.
         let profile = WireEnvelope::Profile {
             username: self.config.username.clone(),
         };
@@ -207,6 +229,7 @@ impl MobileCore {
 
         let mut presence_tick = tokio::time::interval(Duration::from_secs(15));
         loop {
+            // Сначала обрабатываем накопившиеся внешние команды без блокировки.
             while let Ok(command) = command_rx.try_recv() {
                 match command {
                     BridgeCommand::SendChat { text } => {
@@ -237,6 +260,7 @@ impl MobileCore {
                         }
                     }
                     BridgeCommand::UpdateProfile { username } => {
+                        // Публикуем обновлённый профиль.
                         let envelope = WireEnvelope::Profile {
                             username: username.clone(),
                         };
@@ -251,6 +275,7 @@ impl MobileCore {
                         });
                     }
                     BridgeCommand::RequestPresence => {
+                        // Явный запрос presence от bridge.
                         let presence = WireEnvelope::Presence {
                             username: self.config.username.clone(),
                             status: "online".to_owned(),
@@ -266,6 +291,7 @@ impl MobileCore {
 
             tokio::select! {
                 _ = presence_tick.tick() => {
+                    // Периодический presence heartbeat.
                     let presence = WireEnvelope::Presence {
                         username: self.config.username.clone(),
                         status: "online".to_owned(),
@@ -277,6 +303,7 @@ impl MobileCore {
                     }
                 }
                 event = swarm.select_next_some() => {
+                    // Реакция на сетевые события libp2p.
                     match event {
                         SwarmEvent::NewListenAddr { address, .. } => {
                             let _ = event_tx.send(CoreEvent::Presence {

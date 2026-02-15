@@ -10,13 +10,17 @@ use std::{error::Error, fs, path::PathBuf};
 // listen_port — на каком порту слушать входящие подключения.
 #[derive(Debug, Clone, Default)]
 pub struct AppConfig {
+    // Multiaddr bootstrap-узла, например:
+    // /ip4/192.168.1.5/tcp/7001/p2p/12D3KooW...
     pub bootstrap_addr: Option<String>,
+    // Локальный порт прослушивания входящих соединений.
     pub listen_port: Option<u16>,
 }
 
 // Читаем конфиг из файла.
 // Если файла нет — это не ошибка, просто возвращаем None (первый запуск).
 pub fn load_config(config_path: &PathBuf) -> Result<Option<AppConfig>, Box<dyn Error>> {
+    // Если файл не существует — это ожидаемый первый запуск.
     if !config_path.exists() {
         return Ok(None);
     }
@@ -35,6 +39,8 @@ pub fn load_config(config_path: &PathBuf) -> Result<Option<AppConfig>, Box<dyn E
         if let Some((key, value)) = trimmed.split_once('=') {
             let key = key.trim();
             let value = value.trim();
+            // Набор ключей маленький и явный. Это удобно для MVP:
+            // легко читать и править вручную.
             match key {
                 // Адрес bootstrap-пира (multiaddr) сохраняем как строку.
                 "bootstrap_addr" if !value.is_empty() => {
@@ -60,6 +66,8 @@ pub fn save_config(config_path: &PathBuf, config: &AppConfig) -> Result<(), Box<
     let mut lines = Vec::new();
     // Комментарий в шапке файла, чтобы было понятно, что это.
     lines.push("# grokchat startup config".to_owned());
+    // Явно сериализуем каждое поле в текст,
+    // чтобы формат был полностью предсказуем.
     // Если значения нет, пишем пустую строку после '='.
     lines.push(format!(
         "bootstrap_addr={}",
@@ -119,6 +127,8 @@ pub fn parse_startup_args() -> Result<(Option<String>, Option<u16>), Box<dyn Err
             value => {
                 // Позиционный аргумент используем как bootstrap_addr,
                 // но только если он ещё не задан.
+                // Это делает запуск удобнее:
+                // `grokchat <multiaddr>` тоже работает.
                 if bootstrap_addr.is_none() {
                     bootstrap_addr = Some(value.to_owned());
                 }

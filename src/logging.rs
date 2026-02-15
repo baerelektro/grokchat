@@ -10,6 +10,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 // Фоновая задача, которая постоянно читает сообщения из канала и дописывает их в лог.
 pub async fn run_log_writer(log_path: PathBuf, mut receiver: UnboundedReceiver<String>) {
+    // Открываем файл в режиме append: старые логи не теряем,
+    // а дописываем новые строки в конец.
     match OpenOptions::new()
         .create(true)
         .append(true)
@@ -24,6 +26,8 @@ pub async fn run_log_writer(log_path: PathBuf, mut receiver: UnboundedReceiver<S
                     line.push('\n');
                 }
                 // Пишем строку в файл.
+                // Если запись не удалась, выводим ошибку в stderr,
+                // но не роняем весь процесс (логгер не должен убивать приложение).
                 if let Err(err) = file.write_all(line.as_bytes()).await {
                     eprintln!("Не удалось записать в лог {}: {err}", log_path.display());
                 }
@@ -43,5 +47,6 @@ pub fn log_event(sender: &UnboundedSender<String>, message: String) {
         .unwrap_or_default();
     let timestamp = format!("{}.{:03}", now.as_secs(), now.subsec_millis());
     // Игнорируем ошибку send (например, если канал уже закрыт при завершении процесса).
+    // Это штатно при остановке приложения.
     let _ = sender.send(format!("[{timestamp}] {message}"));
 }

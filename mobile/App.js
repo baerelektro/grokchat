@@ -14,15 +14,25 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
+// Коротко про этот файл:
+// 1) Реализует весь мобильный UI (чат + настройки).
+// 2) Держит WebSocket-соединение с backend gateway.
+// 3) Управляет ником: локальная валидация + серверная проверка уникальности.
+
+// Ограничения на ник должны совпадать с backend,
+// чтобы пользователь сразу видел корректные ошибки на клиенте.
 const USERNAME_MIN_LEN = 3;
 const USERNAME_MAX_LEN = 24;
 
+// Форматируем текущее время для меток сообщений в ленте.
 function nowTime() {
   const date = new Date();
   return date.toLocaleTimeString();
 }
 
 function detectDefaultHost() {
+  // Пробуем достать IP хоста из разных Expo-полей манифеста,
+  // потому что структура может отличаться между версиями/режимами запуска.
   const candidates = [
     Constants.expoConfig?.hostUri,
     Constants.manifest2?.extra?.expoClient?.hostUri,
@@ -45,10 +55,12 @@ function detectDefaultHost() {
 }
 
 export default function App() {
+  // Единая нормализация ника во всём UI.
   function normalizeUsername(value) {
     return value.trim().toLowerCase();
   }
 
+  // Локальная проверка формата ника (без сети).
   function validateUsernameLocal(value) {
     if (!value) {
       return 'Ник не должен быть пустым';
@@ -77,9 +89,12 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState([]);
 
+  // Храним сокет в ref, чтобы не терять ссылку между рендерами.
   const socketRef = useRef(null);
   const listRef = useRef(null);
+  // Таймер ожидания ответа на set_username.
   const saveTimeoutRef = useRef(null);
+  // Какой ник прямо сейчас пытаемся сохранить.
   const pendingSaveUsernameRef = useRef(null);
 
   const wsUrl = useMemo(() => `ws://${host.trim()}:${port.trim()}/ws`, [host, port]);
@@ -108,6 +123,8 @@ export default function App() {
   );
 
   const usernameIndicator = useMemo(() => {
+    // Индикатор в настройках:
+    // • нет статуса, ⏳ проверка/сохранение, ✅ свободно, ❌ занято/ошибка.
     if (!usernameStatus) {
       return { icon: '•', color: '#8a90a3' };
     }
@@ -125,6 +142,7 @@ export default function App() {
   }, [usernameStatus]);
 
   const addSystem = (text) => {
+    // Системные сообщения отображаем в той же ленте для прозрачной диагностики.
     setMessages((prev) => [
       ...prev,
       { id: `${Date.now()}-${Math.random()}`, kind: 'system', text, time: nowTime() },
@@ -132,6 +150,7 @@ export default function App() {
   };
 
   const addChat = (from, text) => {
+    // Вставляем сообщение в конец списка.
     setMessages((prev) => [
       ...prev,
       { id: `${Date.now()}-${Math.random()}`, kind: 'chat', from, text, time: nowTime() },
@@ -139,6 +158,7 @@ export default function App() {
   };
 
   const disconnect = () => {
+    // Явно закрываем старый сокет перед новым connect.
     if (socketRef.current) {
       socketRef.current.close();
       socketRef.current = null;
@@ -167,6 +187,7 @@ export default function App() {
           // Служебное событие от backend: в мобильном UI просто игнорируем.
           return;
         } else if (parsed.type === 'username_status') {
+          // Фильтруем "чужие" status-события, чтобы не ломать локальный save-flow.
           const normalizedIncoming = normalizeUsername(parsed.username || '');
           const pendingSave = pendingSaveUsernameRef.current;
           const isApplied = Boolean(parsed.applied);
@@ -194,6 +215,7 @@ export default function App() {
           setIsSavingUsername(false);
 
           if (parsed.available && parsed.applied) {
+            // Сервер подтвердил и применил ник.
             const normalized = normalizeUsername(parsed.username || '');
             if (normalized) {
               setUsername(normalized);
@@ -206,6 +228,7 @@ export default function App() {
           addSystem(`Неизвестное событие: ${event.data}`);
         }
       } catch {
+        // Если это не JSON протокол — показываем как raw.
         addSystem(`Raw: ${String(event.data)}`);
       }
     };
@@ -227,6 +250,7 @@ export default function App() {
     }
 
     socketRef.current.send(JSON.stringify({ type: 'send_message', text }));
+    // Оптимистично добавляем локально, чтобы UI был отзывчивее.
     addChat(username || 'me', text);
     setInput('');
   };
@@ -260,6 +284,7 @@ export default function App() {
     }
 
     socketRef.current.send(JSON.stringify({ type: 'set_username', username: value }));
+    // Переходим в состояние ожидания подтверждения от backend.
     pendingSaveUsernameRef.current = value;
     setIsSavingUsername(true);
     setUsernameStatus({
@@ -273,6 +298,7 @@ export default function App() {
       clearTimeout(saveTimeoutRef.current);
     }
     saveTimeoutRef.current = setTimeout(() => {
+      // Таймаут, если backend не прислал applied-ответ.
       setUsernameStatus((prev) => {
         if (!prev?.applied) {
           return {
@@ -299,12 +325,15 @@ export default function App() {
   };
 
   useEffect(() => {
+    // Автопрокрутка вниз на каждое новое сообщение.
     if (messages.length > 0) {
       requestAnimationFrame(() => scrollToBottom(true));
     }
   }, [messages.length]);
 
   useEffect(() => {
+    // При открытии клавиатуры прокручиваем список к низу,
+    // чтобы поле ввода и последние сообщения были видны.
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const sub = Keyboard.addListener(showEvent, () => {
       requestAnimationFrame(() => scrollToBottom(true));
@@ -314,6 +343,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Cleanup при размонтировании экрана.
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -348,6 +378,7 @@ export default function App() {
     });
 
     const timer = setTimeout(() => {
+      // Debounce HTTP-проверки, чтобы не спамить сервер на каждый символ.
       fetch(
         `${httpBaseUrl}/check-username/${encodeURIComponent(normalized)}?current=${encodeURIComponent(
           normalizeUsername(username)
@@ -357,6 +388,7 @@ export default function App() {
         .then((payload) => {
           const normalizedDraft = normalizeUsername(draftUsername);
           const normalizedIncoming = normalizeUsername(payload.username || '');
+          // Защита от гонки: игнорируем ответ не для текущего draft-значения.
           if (normalizedDraft && normalizedIncoming && normalizedDraft !== normalizedIncoming) {
             return;
           }
@@ -386,6 +418,7 @@ export default function App() {
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style="light" />
         {screen === 'settings' ? (
+          // Экран настроек: редактирование и сохранение ника.
           <View style={styles.container}>
             <Text style={styles.title}>Настройки</Text>
             <Text style={styles.label}>Юзернейм</Text>
@@ -438,6 +471,7 @@ export default function App() {
             </View>
           </View>
         ) : (
+        // Основной экран чата.
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}

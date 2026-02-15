@@ -16,8 +16,16 @@ use tokio::sync::{broadcast, mpsc::UnboundedSender, RwLock};
 use serde::Serialize;
 use serde::Deserialize;
 
+// Коротко про этот файл:
+// 1) Поднимает HTTP/WS шлюз для мобильного клиента.
+// 2) Проксирует команды из UI во внутренний app-loop.
+// 3) Ведёт реестр username и проверяет уникальность/валидность.
+
+// Жёсткие ограничения на формат ника.
 const USERNAME_MIN_LEN: usize = 3;
 const USERNAME_MAX_LEN: usize = 24;
+// TTL для "наблюдавшихся" username: если давно не видели,
+// освобождаем запись как потенциально устаревшую.
 const USERNAME_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Serialize)]
@@ -34,9 +42,13 @@ struct UsernameCheckQuery {
 
 #[derive(Clone)]
 struct GatewayState {
+    // Локальный peer id (для /peer и приветственного system-события).
     peer_id: String,
+    // Канал команд в основной app-loop.
     command_tx: UnboundedSender<UiCommand>,
+    // Broadcast событий всем подключенным WS-клиентам.
     events_tx: broadcast::Sender<UiEvent>,
+    // Реестр занятых/наблюдавшихся username.
     known_usernames: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
@@ -45,8 +57,11 @@ pub async fn run_gateway(
     command_tx: UnboundedSender<UiCommand>,
     events_tx: broadcast::Sender<UiEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Глобальная карта известных username для проверки уникальности.
     let known_usernames: Arc<RwLock<HashMap<String, Instant>>> = Arc::new(RwLock::new(HashMap::new()));
 
+    // Отдельная фоновая задача: слушаем события UsernameObserved
+    // и поддерживаем реестр имён в актуальном состоянии.
     let mut events_rx_for_registry = events_tx.subscribe();
     let known_usernames_for_registry = known_usernames.clone();
     tokio::spawn(async move {
@@ -71,9 +86,12 @@ pub async fn run_gateway(
     };
 
     let router = Router::new()
+        // Простые служебные эндпоинты.
         .route("/health", get(health_handler))
         .route("/peer", get(peer_handler))
+        // HTTP-проверка ника (используется мобильным UI для live-check).
         .route("/check-username/{username}", get(check_username_handler))
+        // Основной WS канал для realtime обмена.
         .route("/ws", get(ws_handler))
         .with_state(state);
 
@@ -97,6 +115,7 @@ async fn check_username_handler(
     Query(query): Query<UsernameCheckQuery>,
     State(state): State<GatewayState>,
 ) -> Json<UsernameCheckResponse> {
+    // Нормализуем оба username (requested/current), чтобы сравнение было корректным.
     let requested = normalize_username(&username);
     let current = query.current.as_deref().map(normalize_username);
     let status = build_username_status(&requested, &state, current.as_deref(), false).await;
@@ -125,7 +144,9 @@ async fn ws_handler(
     State(state): State<GatewayState>,
 ) -> impl IntoResponse {
     match ws {
+        // Успешный WS upgrade.
         Ok(ws) => ws.on_upgrade(move |socket| handle_ws_client(socket, state)).into_response(),
+        // Если клиент пришёл простым HTTP GET без upgrade-заголовков.
         Err(_) => (
             StatusCode::BAD_REQUEST,
             "WebSocket upgrade required. Подключайтесь через ws://<host>:8080/ws, а не обычным HTTP GET.",
@@ -137,6 +158,7 @@ async fn ws_handler(
 async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
     let (mut sender, mut receiver) = socket.split();
     let mut events_rx = state.events_tx.subscribe();
+    // Персональное состояние клиента (какой ник он сейчас выбрал).
     let mut current_username: Option<String> = None;
 
     let hello = UiEvent::System {
@@ -153,6 +175,7 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
 
     let mut send_task_sender = sender;
     let send_task = tokio::spawn(async move {
+        // Задача на отправку: перекидываем broadcast-события в конкретный WS.
         while let Ok(event) = events_rx.recv().await {
             let text = match serde_json::to_string(&event) {
                 Ok(value) => value,
@@ -167,6 +190,7 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
     while let Some(Ok(message)) = receiver.next().await {
         match message {
             Message::Text(text) => {
+                // Сначала пробуем JSON-протокол UI.
                 if let Ok(parsed) = serde_json::from_str::<UiClientMessage>(&text) {
                     match parsed {
                         UiClientMessage::SendMessage { text } => {
@@ -176,6 +200,7 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
                             });
                         }
                         UiClientMessage::CheckUsername { username } => {
+                            // Проверяем ник без применения.
                             let requested = normalize_username(&username);
                             let status = build_username_status(
                                 &requested,
@@ -187,6 +212,7 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
                             let _ = state.events_tx.send(status);
                         }
                         UiClientMessage::SetUsername { username } => {
+                            // Проверяем ник и, если свободен, применяем к текущему WS-клиенту.
                             let requested = normalize_username(&username);
                             let status = build_username_status(
                                 &requested,
@@ -197,6 +223,7 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
                             .await;
 
                             if matches!(status, UiEvent::UsernameStatus { available: true, .. }) {
+                                // Помечаем ник занятым и публикуем наблюдение.
                                 state
                                     .known_usernames
                                     .write()
@@ -219,6 +246,7 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
                         UiClientMessage::Ping => {}
                     }
                 } else {
+                    // Backward compatibility: если пришёл просто текстом, трактуем как chat.
                     let plain = text.trim().to_owned();
                     if !plain.is_empty() {
                         let _ = state.command_tx.send(UiCommand::SendMessage {
@@ -237,6 +265,8 @@ async fn handle_ws_client(socket: WebSocket, state: GatewayState) {
 }
 
 fn normalize_username(value: &str) -> String {
+    // Вся система ника работает в lower-case + trim,
+    // чтобы не было дублей вида "User" и " user ".
     value.trim().to_lowercase()
 }
 
@@ -269,6 +299,7 @@ async fn build_username_status(
     current_username: Option<&str>,
     applied: bool,
 ) -> UiEvent {
+    // Этап 1: базовая валидация формата.
     if let Err(message) = validate_username_format(requested) {
         return UiEvent::UsernameStatus {
             username: requested.to_owned(),
@@ -281,8 +312,11 @@ async fn build_username_status(
     let available = {
         let mut known = state.known_usernames.write().await;
         let now = Instant::now();
+        // Этап 2: сборка мусора по TTL, чтобы старые записи не блокировали ник навсегда.
         known.retain(|_, seen_at| now.duration_since(*seen_at) <= USERNAME_TTL);
 
+        // Этап 3: проверка занятости.
+        // Если пользователь проверяет свой текущий ник — разрешаем.
         if let Some(current) = current_username {
             requested == current || !known.contains_key(requested)
         } else {
