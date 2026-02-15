@@ -9,7 +9,8 @@
       "**/*"
     ],
     "android": {
-      "package": "com.baerelektro.grokchat"
+      "package": "com.baerelektro.grokchat",
+      "softwareKeyboardLayoutMode": "resize"
     },
     "ios": {
       "bundleIdentifier": "com.baerelektro.grokchat"

@@ -106,7 +106,8 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
         style={styles.container}
       >
         <Text style={styles.title}>GrokChat Mobile</Text>
@@ -145,6 +146,8 @@ export default function App() {
 
         <FlatList
           style={styles.list}
+          contentContainerStyle={styles.listContent}
+          keyboardShouldPersistTaps="handled"
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
@@ -156,13 +159,15 @@ export default function App() {
           )}
         />
 
-        <View style={styles.row}>
+        <View style={[styles.row, styles.composerRow]}>
           <TextInput
             value={input}
             onChangeText={setInput}
             placeholder="Сообщение"
             placeholderTextColor="#8a90a3"
             style={[styles.input, styles.msgInput]}
+            returnKeyType="send"
+            blurOnSubmit={false}
             onSubmitEditing={sendMessage}
           />
           <Pressable style={styles.sendBtn} onPress={sendMessage}>
@@ -230,6 +235,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 8,
   },
+  listContent: {
+    paddingBottom: 6,
+  },
   systemBubble: {
     backgroundColor: '#232a45',
     borderRadius: 10,
@@ -258,6 +266,9 @@ const styles = StyleSheet.create({
   },
   msgInput: {
     flex: 1,
+  },
+  composerRow: {
+    paddingBottom: 4,
   },
   sendBtn: {
     backgroundColor: '#2f6bff',
