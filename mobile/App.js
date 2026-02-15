@@ -96,6 +96,8 @@ export default function App() {
   const saveTimeoutRef = useRef(null);
   // Какой ник прямо сейчас пытаемся сохранить.
   const pendingSaveUsernameRef = useRef(null);
+  const screenRef = useRef('chat');
+  const draftUsernameRef = useRef('me');
 
   const wsUrl = useMemo(() => `ws://${host.trim()}:${port.trim()}/ws`, [host, port]);
   const httpBaseUrl = useMemo(() => `http://${host.trim()}:${port.trim()}`, [host, port]);
@@ -176,6 +178,16 @@ export default function App() {
     ws.onopen = () => {
       setConnected(true);
       addSystem('WebSocket подключен');
+
+      const normalizedCurrentUsername = normalizeUsername(username);
+      if (normalizedCurrentUsername) {
+        ws.send(
+          JSON.stringify({
+            type: 'set_username',
+            username: normalizedCurrentUsername,
+          })
+        );
+      }
     };
 
     ws.onmessage = (event) => {
@@ -191,8 +203,17 @@ export default function App() {
           const normalizedIncoming = normalizeUsername(parsed.username || '');
           const pendingSave = pendingSaveUsernameRef.current;
           const isApplied = Boolean(parsed.applied);
+          const currentDraft = normalizeUsername(draftUsernameRef.current || '');
+
+          if (!pendingSave && screenRef.current !== 'settings') {
+            return;
+          }
 
           if (pendingSave && normalizedIncoming !== pendingSave) {
+            return;
+          }
+
+          if (!pendingSave && normalizedIncoming !== currentDraft) {
             return;
           }
 
@@ -267,6 +288,21 @@ export default function App() {
   const saveSettings = () => {
     const value = normalizedDraftUsername;
     const localError = draftUsernameValidation;
+    const currentNormalized = normalizeUsername(username);
+
+    if (isSavingUsername) {
+      return;
+    }
+
+    if (value === currentNormalized) {
+      setUsernameStatus({
+        available: true,
+        applied: true,
+        username: value,
+        message: 'Этот ник уже сохранён',
+      });
+      return;
+    }
 
     if (localError) {
       setUsernameStatus({ available: false, applied: false, username: value, message: localError });
@@ -353,11 +389,47 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
+
+  useEffect(() => {
+    draftUsernameRef.current = draftUsername;
+  }, [draftUsername]);
+
+  useEffect(() => {
     if (screen !== 'settings') {
       return;
     }
 
+    if (isSavingUsername || pendingSaveUsernameRef.current) {
+      return;
+    }
+
     const normalized = normalizeUsername(draftUsername);
+    const currentNormalized = normalizeUsername(username);
+
+    if (normalized === currentNormalized) {
+      setUsernameStatus((prev) => {
+        if (
+          prev &&
+          prev.available === true &&
+          prev.applied === true &&
+          prev.username === normalized &&
+          prev.message === 'Это текущий ник'
+        ) {
+          return prev;
+        }
+
+        return {
+          available: true,
+          applied: true,
+          username: normalized,
+          message: 'Это текущий ник',
+        };
+      });
+      return;
+    }
+
     const localError = validateUsernameLocal(normalized);
 
     if (localError) {
@@ -377,15 +449,22 @@ export default function App() {
       message: 'Проверяем доступность ника...',
     });
 
+    const controller = new AbortController();
+
     const timer = setTimeout(() => {
       // Debounce HTTP-проверки, чтобы не спамить сервер на каждый символ.
       fetch(
         `${httpBaseUrl}/check-username/${encodeURIComponent(normalized)}?current=${encodeURIComponent(
           normalizeUsername(username)
-        )}`
+        )}`,
+        { signal: controller.signal }
       )
         .then((response) => response.json())
         .then((payload) => {
+          if (screenRef.current !== 'settings' || isSavingUsername || pendingSaveUsernameRef.current) {
+            return;
+          }
+
           const normalizedDraft = normalizeUsername(draftUsername);
           const normalizedIncoming = normalizeUsername(payload.username || '');
           // Защита от гонки: игнорируем ответ не для текущего draft-значения.
@@ -400,7 +479,11 @@ export default function App() {
             message: payload.message || 'Не удалось проверить ник',
           });
         })
-        .catch(() => {
+        .catch((error) => {
+          if (error?.name === 'AbortError') {
+            return;
+          }
+
           setUsernameStatus({
             available: false,
             applied: false,
@@ -410,8 +493,11 @@ export default function App() {
         });
     }, 300);
 
-    return () => clearTimeout(timer);
-  }, [draftUsername, screen, host, port, username]);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [draftUsername, screen, host, port, username, isSavingUsername]);
 
   return (
     <SafeAreaProvider>
