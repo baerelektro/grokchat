@@ -499,11 +499,27 @@ export default function App() {
         </View>
 
         <View style={styles.row}>
-          <Pressable style={styles.btn} onPress={connect}>
-            <Text style={styles.btnText}>Подключить</Text>
+          <Pressable
+            style={({ pressed }) => [
+              styles.btn,
+              connected && styles.btnInactive,
+              pressed && !connected && styles.btnPressed,
+            ]}
+            onPress={connect}
+            disabled={connected}
+          >
+            <Text style={[styles.btnText, connected && styles.btnTextInactive]}>Подключить</Text>
           </Pressable>
-          <Pressable style={[styles.btn, styles.btnSecondary]} onPress={disconnect}>
-            <Text style={styles.btnText}>Отключить</Text>
+          <Pressable
+            style={({ pressed }) => [
+              connected ? styles.btn : styles.btnSecondary,
+              !connected && styles.btnInactive,
+              pressed && connected && styles.btnPressed,
+            ]}
+            onPress={disconnect}
+            disabled={!connected}
+          >
+            <Text style={[styles.btnText, !connected && styles.btnTextInactive]}>Отключить</Text>
           </Pressable>
           <Pressable style={[styles.btn, styles.gearBtn]} onPress={openSettings}>
             <Text style={styles.btnText}>⚙️</Text>
@@ -595,12 +611,21 @@ const styles = StyleSheet.create({
   btnSecondary: {
     backgroundColor: '#39405d',
   },
+  btnPressed: {
+    backgroundColor: '#586181',
+  },
+  btnInactive: {
+    backgroundColor: '#586181',
+  },
   btnDisabled: {
     backgroundColor: '#586181',
   },
   btnText: {
     color: '#fff',
     fontWeight: '600',
+  },
+  btnTextInactive: {
+    color: '#c5cad8',
   },
   status: {
     color: '#d7dcf0',
