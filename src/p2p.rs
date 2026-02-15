@@ -1,3 +1,7 @@
+// Коротко про этот файл:
+// 1) Создаёт Swarm (TCP + Noise + Yamux + gossipsub + mdns).
+// 2) Настраивает gossipsub для небольшого p2p-чата.
+// 3) Даёт helper для логирования состояния mesh/known peers.
 // Сетевой слой: создаём Swarm (transport + протоколы поведения) и утилиты по состоянию mesh.
 use crate::logging::log_event;
 use libp2p::{
