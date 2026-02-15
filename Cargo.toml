@@ -1,0 +1,9 @@
+[package]
+name = "grokchat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libp2p = { version = "0.53.2", features = ["tcp", "tls", "dns", "noise", "yamux", "gossipsub", "mdns", "tokio", "macros"] }
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"

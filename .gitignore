@@ -1,0 +1,15 @@
+# Rust build artifacts
+/target/
+
+# Logs and local runtime data
+*.log
+grokchat.log
+
+# Local app config
+grokchat.conf
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
