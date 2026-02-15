@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import Constants from 'expo-constants';
 import {
   View,
   Text,
@@ -18,10 +19,35 @@ function nowTime() {
   return date.toLocaleTimeString();
 }
 
+function detectDefaultHost() {
+  const candidates = [
+    Constants.expoConfig?.hostUri,
+    Constants.manifest2?.extra?.expoClient?.hostUri,
+    Constants.manifest?.debuggerHost,
+  ];
+
+  for (const rawValue of candidates) {
+    if (!rawValue || typeof rawValue !== 'string') {
+      continue;
+    }
+
+    const base = rawValue.split('/')[0].split('?')[0];
+    const host = base.includes(':') ? base.split(':')[0] : base;
+    if (host && host !== '0.0.0.0') {
+      return host;
+    }
+  }
+
+  return '192.168.1.10';
+}
+
 export default function App() {
-  const [host, setHost] = useState('192.168.1.10');
+  const [host, setHost] = useState(detectDefaultHost);
   const [port, setPort] = useState('8080');
   const [input, setInput] = useState('');
+  const [username, setUsername] = useState('me');
+  const [draftUsername, setDraftUsername] = useState('me');
+  const [screen, setScreen] = useState('chat');
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState([]);
 
@@ -96,8 +122,19 @@ export default function App() {
     }
 
     socketRef.current.send(JSON.stringify({ type: 'send_message', text }));
-    addChat('me', text);
+    addChat(username || 'me', text);
     setInput('');
+  };
+
+  const openSettings = () => {
+    setDraftUsername(username || 'me');
+    setScreen('settings');
+  };
+
+  const saveSettings = () => {
+    const value = draftUsername.trim();
+    setUsername(value || 'me');
+    setScreen('chat');
   };
 
   const scrollToBottom = (animated = true) => {
@@ -131,6 +168,29 @@ export default function App() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style="light" />
+        {screen === 'settings' ? (
+          <View style={styles.container}>
+            <Text style={styles.title}>Настройки</Text>
+            <Text style={styles.label}>Юзернейм</Text>
+            <TextInput
+              value={draftUsername}
+              onChangeText={setDraftUsername}
+              placeholder="Введите юзернейм"
+              placeholderTextColor="#8a90a3"
+              style={styles.input}
+              autoCapitalize="none"
+            />
+
+            <View style={styles.row}>
+              <Pressable style={styles.btn} onPress={saveSettings}>
+                <Text style={styles.btnText}>Сохранить</Text>
+              </Pressable>
+              <Pressable style={[styles.btn, styles.btnSecondary]} onPress={() => setScreen('chat')}>
+                <Text style={styles.btnText}>Назад</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
@@ -164,10 +224,13 @@ export default function App() {
           <Pressable style={[styles.btn, styles.btnSecondary]} onPress={disconnect}>
             <Text style={styles.btnText}>Отключить</Text>
           </Pressable>
+          <Pressable style={[styles.btn, styles.gearBtn]} onPress={openSettings}>
+            <Text style={styles.btnText}>⚙️</Text>
+          </Pressable>
         </View>
 
         <Text style={styles.status}>
-          Статус: {connected ? '🟢 online' : '🔴 offline'}
+          Статус: {connected ? '🟢 online' : '🔴 offline'} · Ник: {username}
         </Text>
 
         <FlatList
@@ -203,6 +266,7 @@ export default function App() {
           </Pressable>
         </View>
         </KeyboardAvoidingView>
+        )}
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -258,6 +322,10 @@ const styles = StyleSheet.create({
     color: '#d7dcf0',
     fontSize: 13,
   },
+  label: {
+    color: '#d7dcf0',
+    fontSize: 13,
+  },
   list: {
     flex: 1,
     backgroundColor: '#11172c',
@@ -304,5 +372,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 10,
+  },
+  gearBtn: {
+    minWidth: 44,
+    alignItems: 'center',
   },
 });
