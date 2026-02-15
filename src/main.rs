@@ -4,7 +4,9 @@
 // 3) Передаёт управление в app::run().
 // Подключаем внутренние модули проекта.
 mod app;
+mod api_types;
 mod config;
+mod gateway;
 mod handlers;
 mod logging;
 mod p2p;

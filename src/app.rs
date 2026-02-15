@@ -5,13 +5,15 @@
 // Главный оркестратор приложения:
 // грузим конфиг, поднимаем сеть, запускаем цикл обработки stdin + сетевых событий.
 use crate::config::{load_config, parse_startup_args, save_config};
+use crate::api_types::{UiCommand, UiEvent};
+use crate::gateway::run_gateway;
 use crate::handlers::{handle_stdin_line, handle_swarm_event, DialState};
 use crate::logging::{log_event, run_log_writer};
 use crate::p2p::build_swarm;
 use libp2p::{futures::StreamExt, gossipsub, Multiaddr, PeerId};
 use std::{error::Error, path::PathBuf};
 use tokio::io::{self, AsyncBufReadExt};
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::{broadcast, mpsc::unbounded_channel};
 
 // Основной жизненный цикл приложения.
 pub async fn run() -> Result<(), Box<dyn Error>> {
@@ -43,6 +45,8 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let id_keys = libp2p::identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(id_keys.public());
     let (log_tx, log_rx) = unbounded_channel();
+    let (ui_command_tx, mut ui_command_rx) = unbounded_channel::<UiCommand>();
+    let (ui_events_tx, _) = broadcast::channel::<UiEvent>(512);
 
     // Запускаем фонового писателя логов в файл.
     let log_path = PathBuf::from("grokchat.log");
@@ -67,6 +71,15 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     );
     log_event(&log_tx, format!("Локальный Peer ID: {}", local_peer_id));
     println!("🔐 Твой Peer ID: {}", local_peer_id);
+
+    let gateway_peer_id = local_peer_id.to_string();
+    let gateway_command_tx = ui_command_tx.clone();
+    let gateway_events_tx = ui_events_tx.clone();
+    tokio::spawn(async move {
+        if let Err(err) = run_gateway(gateway_peer_id, gateway_command_tx, gateway_events_tx).await {
+            eprintln!("UI gateway остановлен с ошибкой: {err}");
+        }
+    });
 
     // 4) Поднимаем p2p-сеть (Swarm) и подписываемся на чат-топик.
     let mut swarm = build_swarm(id_keys, local_peer_id)?;
@@ -100,9 +113,23 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                     handle_stdin_line(line, &mut swarm, &chat_topic, &log_tx).await;
                 }
             }
+            command = ui_command_rx.recv() => {
+                if let Some(UiCommand::SendMessage { text }) = command {
+                    if !text.is_empty() {
+                        handle_stdin_line(text, &mut swarm, &chat_topic, &log_tx).await;
+                    }
+                }
+            }
             event = swarm.select_next_some() => {
                 // Обработка сетевого события.
-                handle_swarm_event(event, &mut swarm, &chat_topic, &log_tx, &mut dial_state);
+                handle_swarm_event(
+                    event,
+                    &mut swarm,
+                    &chat_topic,
+                    &log_tx,
+                    &mut dial_state,
+                    Some(&ui_events_tx),
+                );
             }
         }
     }

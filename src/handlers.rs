@@ -7,6 +7,7 @@
 // - события Swarm (сеть, mDNS, gossipsub)
 use crate::logging::log_event;
 use crate::p2p::{log_mesh_state, MyBehaviour, MyBehaviourEvent};
+use crate::api_types::UiEvent;
 use libp2p::{
     gossipsub, mdns,
     swarm::{Swarm, SwarmEvent},
@@ -16,7 +17,7 @@ use std::{
     collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{broadcast, mpsc::UnboundedSender};
 
 // Текущее состояние попыток dial, чтобы не устраивать шторм переподключений.
 pub struct DialState {
@@ -162,6 +163,7 @@ pub fn handle_swarm_event(
     chat_topic: &gossipsub::IdentTopic,
     log_tx: &UnboundedSender<String>,
     dial_state: &mut DialState,
+    ui_events: Option<&broadcast::Sender<UiEvent>>,
 ) {
     match event {
         // Нода начала слушать новый адрес.
@@ -213,6 +215,12 @@ pub fn handle_swarm_event(
                     log_tx,
                     format!("Получено сообщение от {}: {}", propagation_source, text),
                 );
+                if let Some(tx) = ui_events {
+                    let _ = tx.send(UiEvent::ChatMessage {
+                        from: propagation_source.to_string(),
+                        text: text.to_string(),
+                    });
+                }
                 log_mesh_state(log_tx, swarm, &chat_topic.hash(), "После получения сообщения");
             }
             // Пир подписался на топик.

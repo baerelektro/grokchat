@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "GrokChat",
+    "slug": "grokchat-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "com.baerelektro.grokchat"
+    },
+    "ios": {
+      "bundleIdentifier": "com.baerelektro.grokchat"
+    }
+  }
+}

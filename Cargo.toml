@@ -7,3 +7,6 @@ edition = "2021"
 libp2p = { version = "0.53.2", features = ["tcp", "tls", "dns", "noise", "yamux", "gossipsub", "mdns", "tokio", "macros"] }
 tokio = { version = "1.0", features = ["full"] }
 futures = "0.3"
+axum = { version = "0.8", features = ["ws", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
